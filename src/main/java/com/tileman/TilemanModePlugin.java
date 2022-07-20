@@ -30,6 +30,7 @@ import com.google.common.base.Strings;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import com.google.inject.Provides;
+import java.awt.Color;
 import lombok.AccessLevel;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
@@ -38,6 +39,7 @@ import net.runelite.api.*;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.*;
+import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
@@ -72,6 +74,9 @@ public class TilemanModePlugin extends Plugin {
 
     @Inject
     private Client client;
+
+	@Inject
+	private ClientThread clientThread;
 
     @Inject
     private TilemanModeConfigEvaluator config;
@@ -129,6 +134,10 @@ public class TilemanModePlugin extends Plugin {
     private boolean inHouse = false;
     private long totalXp;
 
+	private TileRuneLiteObject delayedTile;
+
+	private final Map<WorldPoint, TileRuneLiteObject> tileObjects = new HashMap<>();
+
     @Subscribe
     public void onMenuOptionClicked(MenuOptionClicked event) {
         if (event.getMenuAction().getId() != MenuAction.RUNELITE.getId() ||
@@ -178,6 +187,8 @@ public class TilemanModePlugin extends Plugin {
             return;
         }
         loadPoints();
+		removeAllTileObjects();
+		handleTileObjects();
         updateTileCounter();
         inHouse = false;
     }
@@ -216,7 +227,7 @@ public class TilemanModePlugin extends Plugin {
         overlayManager.add(worldMapOverlay);
         overlayManager.add(infoOverlay);
         loadPoints();
-        updateTileCounter();
+        clientThread.invokeLater(this::handleTileObjects);
         log.debug("startup");
         TilemanImportPanel panel = new TilemanImportPanel(this);
         NavigationButton navButton = NavigationButton.builder()
@@ -237,6 +248,8 @@ public class TilemanModePlugin extends Plugin {
         overlayManager.remove(worldMapOverlay);
         overlayManager.remove(infoOverlay);
         points.clear();
+		clientThread.invokeLater(this::removeAllTileObjects);
+		delayedTile = null;
     }
 
     private void autoMark() {
@@ -256,8 +269,16 @@ public class TilemanModePlugin extends Plugin {
         if ((lastTile == null
                 || (lastTile.distanceTo(playerPosLocal) != 0 && lastPlane == playerPos.getPlane())
                 || lastPlane != playerPos.getPlane()) && !regionIsOnTutorialIsland(playerPos.getRegionID())) {
+			// Walk happened, activate delayed tile
+			if (delayedTile != null)
+			{
+				delayedTile.activate();
+				delayedTile = null;
+			}
+
             // Player moved
             handleWalkedToTile(playerPosLocal);
+
             lastTile = playerPosLocal;
             lastPlane = client.getPlane();
             updateTileCounter();
@@ -313,6 +334,8 @@ public class TilemanModePlugin extends Plugin {
             }
         }
         loadPoints();
+		removeAllTileObjects();
+		handleTileObjects();
     }
 
     List<String> getAllRegionIds(String configGroup) {
@@ -406,6 +429,7 @@ public class TilemanModePlugin extends Plugin {
             Collection<WorldPoint> worldPoint = translateToWorldPoint(getTiles(regionId));
             points.addAll(worldPoint);
         }
+
         updateTileCounter();
     }
 
@@ -457,7 +481,7 @@ public class TilemanModePlugin extends Plugin {
         }
 
         // Mark the tile they walked to
-        updateTileMark(currentPlayerPoint, true);
+        updateTileMark(currentPlayerPoint, true, true);
 
         // If player moves 2 tiles in a straight line, fill in the middle tile
         // TODO Fill path between last point and current point. This will fix missing tiles that occur when you lag
@@ -617,10 +641,15 @@ public class TilemanModePlugin extends Plugin {
         if(lastPlane != client.getPlane()) {
             return;
         }
-        updateTileMark(localPoint, true);
+        updateTileMark(localPoint, true, true);
     }
 
-    private void updateTileMark(LocalPoint localPoint, boolean markedValue) {
+	private void updateTileMark(LocalPoint localPoint, boolean markedValue)
+	{
+		updateTileMark(localPoint, markedValue, false);
+	}
+
+    private void updateTileMark(LocalPoint localPoint, boolean markedValue, boolean isAutoMark) {
         if(containsAnyOf(getTileMovementFlags(localPoint), fullBlock)) {
             return;
         }
@@ -637,10 +666,21 @@ public class TilemanModePlugin extends Plugin {
             // Try add tile
             if (!tilemanModeTiles.contains(point) && (config.allowTileDeficit() || remainingTiles > 0)) {
                 tilemanModeTiles.add(point);
+				if (!client.getLocalPlayer().getWorldLocation().equals(worldPoint) || !isAutoMark)
+				{
+					System.out.println(client.getLocalPlayer().getWorldLocation());
+					System.out.println(worldPoint);
+					addTileObject(worldPoint, true);
+				}
+				else
+				{
+					delayedTile = addTileObject(worldPoint, false);
+				}
             }
         } else {
             // Try remove tile
             tilemanModeTiles.remove(point);
+			removeTileObject(worldPoint);
         }
 
         savePoints(regionId, tilemanModeTiles);
@@ -650,6 +690,54 @@ public class TilemanModePlugin extends Plugin {
     int getXpUntilNextTile() {
         return xpUntilNextTile;
     }
+
+	private void handleTileObject(WorldPoint worldPoint)
+	{
+		addTileObject(worldPoint, true);
+	}
+
+	private void handleTileObjects()
+	{
+		for (WorldPoint worldPoint : points)
+		{
+			handleTileObject(worldPoint);
+		}
+	}
+
+	private void removeAllTileObjects()
+	{
+		for (TileRuneLiteObject obj : tileObjects.values())
+		{
+			obj.deactivate();
+		}
+
+		tileObjects.clear();
+	}
+
+	private TileRuneLiteObject addTileObject(WorldPoint worldPoint, boolean activateOnSpawn)
+	{
+		TileRuneLiteObject obj = tileObjects.get(worldPoint);
+		if (obj == null)
+		{
+			obj = new TileRuneLiteObject(client, clientThread, worldPoint, Color.BLACK, TileRuneLiteObject.Style.FIRE, activateOnSpawn);
+			tileObjects.put(worldPoint, obj);
+		}
+		else
+		{
+			obj.setColor(Color.BLACK);
+			obj.setStyle(TileRuneLiteObject.Style.FIRE);
+		}
+		return obj;
+	}
+
+	private void removeTileObject(WorldPoint worldPoint)
+	{
+		TileRuneLiteObject obj = tileObjects.remove(worldPoint);
+		if (obj != null)
+		{
+			obj.deactivate();
+		}
+	}
 
     @AllArgsConstructor
     enum MovementFlag {

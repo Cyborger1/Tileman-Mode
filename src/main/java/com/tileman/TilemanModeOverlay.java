@@ -26,6 +26,8 @@
  */
 package com.tileman;
 
+import java.awt.geom.Area;
+import java.awt.image.BufferedImage;
 import net.runelite.api.Client;
 import net.runelite.api.Perspective;
 import net.runelite.api.coords.LocalPoint;
@@ -35,10 +37,13 @@ import net.runelite.client.ui.overlay.*;
 import javax.inject.Inject;
 import java.awt.*;
 import java.util.Collection;
+import net.runelite.client.util.ImageUtil;
 
 public class TilemanModeOverlay extends Overlay
 {
 	private static final int MAX_DRAW_DISTANCE = 32;
+
+	private static final BufferedImage IMAGE = ImageUtil.loadImageResource(TilemanModePlugin.class, "/lava32.png");
 
 	private final Client client;
 	private final TilemanModePlugin plugin;
@@ -61,6 +66,7 @@ public class TilemanModeOverlay extends Overlay
 	public Dimension render(Graphics2D graphics)
 	{
 		final Collection<WorldPoint> points = plugin.getPoints();
+		Area area = new Area();
 		for (final WorldPoint point : points)
 		{
 			if (point.getPlane() != client.getPlane())
@@ -68,34 +74,51 @@ public class TilemanModeOverlay extends Overlay
 				continue;
 			}
 
-			drawTile(graphics, point);
+			//Polygon poly = getTilePoly(point);
+			//if (poly != null)
+			//{
+			//	area.add(new Area(poly));
+			//}
+
+			//drawTile(graphics, point);
 		}
+
+
+		//graphics.setClip(area);
+		//Canvas clientCanvas = client.getCanvas();
+		//graphics.setPaint(new TexturePaint(ImageUtil.alphaOffset(IMAGE, -100), new Rectangle(32, 32)));
+		//graphics.fillRect(clientCanvas.getX(), clientCanvas.getY(), clientCanvas.getWidth(), clientCanvas.getHeight());
+		//graphics.drawImage(IMAGE, 0, 0, null);
+		//graphics.setClip(null);
 
 		return null;
 	}
 
 	private void drawTile(Graphics2D graphics, WorldPoint point)
 	{
+		Polygon poly = getTilePoly(point);
+		if (poly != null)
+		{
+			OverlayUtil.renderPolygon(graphics, poly, getTileColor());
+		}
+	}
+
+	private Polygon getTilePoly(WorldPoint point)
+	{
 		WorldPoint playerLocation = client.getLocalPlayer().getWorldLocation();
 
 		if (point.distanceTo(playerLocation) >= MAX_DRAW_DISTANCE)
 		{
-			return;
+			return null;
 		}
 
 		LocalPoint lp = LocalPoint.fromWorld(client, point);
 		if (lp == null)
 		{
-			return;
+			return null;
 		}
 
-		Polygon poly = Perspective.getCanvasTilePoly(client, lp);
-		if (poly == null)
-		{
-			return;
-		}
-
-		OverlayUtil.renderPolygon(graphics, poly, getTileColor());
+		return Perspective.getCanvasTilePoly(client, lp);
 	}
 
 	private Color getTileColor() {
